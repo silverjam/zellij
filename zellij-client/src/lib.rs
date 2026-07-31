@@ -1347,37 +1347,12 @@ pub fn start_server_detached(
         ClientInfo::New(name, layout_info, layout_cwd) => {
             envs::set_session_name(name.clone());
 
-            let cli_assets = CliAssets {
-                config_file_path: Config::config_file_path(&cli_args),
-                config_dir: cli_args.config_dir.clone(),
-                should_ignore_config: cli_args.is_setup_clean(),
-                configuration_options: cli_args.options(),
-                layout: layout_info.or_else(|| {
-                    cli_args
-                        .layout
-                        .as_ref()
-                        .and_then(|l| {
-                            LayoutInfo::from_cli(
-                                &config_options.layout_dir,
-                                &Some(l.clone()),
-                                std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                            )
-                        })
-                        .or_else(|| {
-                            LayoutInfo::from_config(
-                                &config_options.layout_dir,
-                                &config_options.default_layout,
-                            )
-                        })
-                }),
-                terminal_window_size: Size { cols: 50, rows: 50 }, // static number until a
-                // client connects
-                data_dir: cli_args.data_dir.clone(),
-                is_debug: cli_args.debug,
-                max_panes: cli_args.max_panes,
-                force_run_layout_commands: false,
-                cwd: layout_cwd,
-            };
+            let cli_assets = detached_new_session_cli_assets(
+                &cli_args,
+                &config_options,
+                layout_info,
+                layout_cwd,
+            );
 
             os_input.update_session_name(name);
             let ipc_pipe = create_ipc_pipe();
@@ -1406,6 +1381,48 @@ pub fn start_server_detached(
 
     os_input.connect_to_server(&*ipc_pipe);
     os_input.send_to_server(first_msg);
+}
+
+fn detached_new_session_cli_assets(
+    cli_args: &CliArgs,
+    config_options: &Options,
+    layout_info: Option<LayoutInfo>,
+    layout_cwd: Option<PathBuf>,
+) -> CliAssets {
+    CliAssets {
+        config_file_path: Config::config_file_path(cli_args),
+        config_dir: cli_args.config_dir.clone(),
+        should_ignore_config: cli_args.is_setup_clean(),
+        // `config_options` includes options nested below commands such as
+        // `attach --create-background ... options`. `CliArgs::options()` only
+        // recognizes a top-level `options` command and loses those values.
+        configuration_options: Some(config_options.clone()),
+        layout: layout_info.or_else(|| {
+            cli_args
+                .layout
+                .as_ref()
+                .and_then(|l| {
+                    LayoutInfo::from_cli(
+                        &config_options.layout_dir,
+                        &Some(l.clone()),
+                        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                    )
+                })
+                .or_else(|| {
+                    LayoutInfo::from_config(
+                        &config_options.layout_dir,
+                        &config_options.default_layout,
+                    )
+                })
+        }),
+        terminal_window_size: Size { cols: 50, rows: 50 }, // static number until a
+        // client connects
+        data_dir: cli_args.data_dir.clone(),
+        is_debug: cli_args.debug,
+        max_panes: cli_args.max_panes,
+        force_run_layout_commands: false,
+        cwd: layout_cwd,
+    }
 }
 
 fn terminal_teardown_message(message: &str, rows: usize, include_kitty_exit: bool) -> String {
