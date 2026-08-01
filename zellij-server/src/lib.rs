@@ -359,6 +359,18 @@ fn attached_client_plugin_instructions(
     ]
 }
 
+fn attached_client_config(cli_assets: &CliAssets, saved_config: &Config) -> Config {
+    if cli_assets.should_ignore_config || cli_assets.config_file_path.is_none() {
+        saved_config.clone()
+    } else {
+        // Background sessions can be created with runtime options while their
+        // saved config still contains the built-in keybinds. An attaching web
+        // client carries the explicit config path used by the web server, so
+        // load that config for its per-client keybinds and plugin metadata.
+        cli_assets.load_config_and_layout().0
+    }
+}
+
 impl SessionMetaData {
     pub fn get_client_keybinds_and_mode(
         &self,
@@ -776,6 +788,8 @@ impl SessionState {
 #[cfg(test)]
 mod session_state_tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
     use zellij_utils::{data::InputMode, input::keybinds::Keybinds};
 
     fn with_client(id: ClientId) -> SessionState {
@@ -849,6 +863,37 @@ mod session_state_tests {
             add_client,
             PluginInstruction::AddClient(added_client_id) if added_client_id == client_id
         ));
+    }
+
+    #[test]
+    fn attached_client_loads_its_explicit_config_instead_of_saved_defaults() {
+        let mut config_file = NamedTempFile::new().unwrap();
+        write!(
+            config_file,
+            r#"
+keybinds clear-defaults=true {{
+    locked {{
+        bind "Ctrl g" {{ SwitchToMode "Normal"; }}
+    }}
+}}
+default_mode "locked"
+"#
+        )
+        .unwrap();
+
+        let saved_config = Config::default();
+        let cli_assets = CliAssets {
+            config_file_path: Some(config_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let attached_config = attached_client_config(&cli_assets, &saved_config);
+
+        assert_eq!(
+            attached_config.options.default_mode,
+            Some(InputMode::Locked)
+        );
+        assert_ne!(attached_config.keybinds, saved_config.keybinds);
     }
 
     #[test]
@@ -1179,7 +1224,8 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
             ) => {
                 let mut rlock = session_data.write().unwrap();
                 let session_data = rlock.as_mut().unwrap();
-                let config = session_data.session_configuration.saved_config.clone();
+                let saved_config = session_data.session_configuration.saved_config.clone();
+                let config = attached_client_config(&cli_assets, &saved_config);
                 let runtime_config_options = match cli_assets.configuration_options {
                     Some(configuration_options) => config.options.merge(configuration_options),
                     None => config.options.clone(),
@@ -1200,9 +1246,17 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                 runtime_configuration.options = runtime_config_options.clone();
                 session_data
                     .session_configuration
-                    .set_client_runtime_configuration(client_id, runtime_configuration);
+                    .set_client_runtime_configuration(client_id, runtime_configuration.clone());
+                // Seed Screen's ModeInfo as well as the plugin runtime before
+                // either subsystem adds the attached client. A later
+                // ChangeMode otherwise republishes Screen's stock keybinds and
+                // overwrites the correctly configured status plugin.
+                session_data.propagate_configuration_changes(
+                    vec![(client_id, runtime_configuration)],
+                    false,
+                );
 
-                let default_input_mode = config.options.default_mode.unwrap_or_default();
+                let default_input_mode = runtime_config_options.default_mode.unwrap_or_default();
                 session_data
                     .current_input_modes
                     .insert(client_id, default_input_mode);
@@ -1241,7 +1295,7 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                         .send_to_plugin(plugin_instruction)
                         .unwrap();
                 }
-                let default_mode = config.options.default_mode.unwrap_or_default();
+                let default_mode = runtime_config_options.default_mode.unwrap_or_default();
                 // ModeUpdate broadcast is handled by the screen thread via
                 // change_mode() -> update_input_modes()
                 session_data
