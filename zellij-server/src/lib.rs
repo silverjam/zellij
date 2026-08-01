@@ -336,6 +336,29 @@ pub(crate) struct SessionMetaData {
     config_file_path: Option<PathBuf>,
 }
 
+fn attached_client_plugin_instructions(
+    client_id: ClientId,
+    config: &Config,
+    runtime_config_options: &Options,
+    default_shell: Option<TerminalAction>,
+) -> [PluginInstruction; 2] {
+    [
+        // Register the attached client's effective configuration before cloning
+        // per-client plugins. Otherwise LoadingContext falls back to the plugin
+        // runtime defaults and the web status bar initially advertises Zellij's
+        // stock keybindings instead of the client's configured keymap.
+        PluginInstruction::Reconfigure {
+            client_id,
+            keybinds: Some(config.keybinds.clone()),
+            default_mode: runtime_config_options.default_mode,
+            default_shell,
+            layout_dir: runtime_config_options.layout_dir.clone(),
+            was_written_to_disk: false,
+        },
+        PluginInstruction::AddClient(client_id),
+    ]
+}
+
 impl SessionMetaData {
     pub fn get_client_keybinds_and_mode(
         &self,
@@ -753,6 +776,7 @@ impl SessionState {
 #[cfg(test)]
 mod session_state_tests {
     use super::*;
+    use zellij_utils::{data::InputMode, input::keybinds::Keybinds};
 
     fn with_client(id: ClientId) -> SessionState {
         let mut s = SessionState::new();
@@ -788,6 +812,43 @@ mod session_state_tests {
     fn pick_forward_target_none_when_no_clients() {
         let s = SessionState::new();
         assert_eq!(s.pick_forward_target(), None);
+    }
+
+    #[test]
+    fn attached_client_configures_plugins_before_they_are_cloned() {
+        let client_id = 7;
+        let mut config = Config::default();
+        config.keybinds = Keybinds::default();
+        let runtime_config_options = Options {
+            default_mode: Some(InputMode::Locked),
+            layout_dir: Some(PathBuf::from("/tmp/custom-layouts")),
+            ..Default::default()
+        };
+
+        let [reconfigure, add_client] =
+            attached_client_plugin_instructions(client_id, &config, &runtime_config_options, None);
+
+        match reconfigure {
+            PluginInstruction::Reconfigure {
+                client_id: configured_client_id,
+                keybinds,
+                default_mode,
+                layout_dir,
+                was_written_to_disk,
+                ..
+            } => {
+                assert_eq!(configured_client_id, client_id);
+                assert_eq!(keybinds, Some(config.keybinds));
+                assert_eq!(default_mode, Some(InputMode::Locked));
+                assert_eq!(layout_dir, runtime_config_options.layout_dir);
+                assert!(!was_written_to_disk);
+            },
+            _ => panic!("attached client must be reconfigured before plugins are cloned"),
+        }
+        assert!(matches!(
+            add_client,
+            PluginInstruction::AddClient(added_client_id) if added_client_id == client_id
+        ));
     }
 
     #[test]
@@ -1169,10 +1230,17 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                         pane_id_to_focus,
                     ))
                     .unwrap();
-                session_data
-                    .senders
-                    .send_to_plugin(PluginInstruction::AddClient(client_id))
-                    .unwrap();
+                for plugin_instruction in attached_client_plugin_instructions(
+                    client_id,
+                    &config,
+                    &runtime_config_options,
+                    session_data.default_shell.clone(),
+                ) {
+                    session_data
+                        .senders
+                        .send_to_plugin(plugin_instruction)
+                        .unwrap();
+                }
                 let default_mode = config.options.default_mode.unwrap_or_default();
                 // ModeUpdate broadcast is handled by the screen thread via
                 // change_mode() -> update_input_modes()
