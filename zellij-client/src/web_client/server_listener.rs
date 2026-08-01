@@ -14,7 +14,10 @@ use std::{
 use zellij_utils::{
     cli::CliArgs,
     data::Style,
-    input::{config::Config, options::Options},
+    input::{
+        config::{Config, ConfigError},
+        options::Options,
+    },
     ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
     sessions::generate_unique_session_name,
     setup::Setup,
@@ -27,6 +30,7 @@ pub fn zellij_server_listener(
     mut config: Config,
     mut config_options: Options,
     config_file_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     web_client_id: String,
     session_manager: Arc<dyn SessionManager>,
     attachment_complete_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -69,7 +73,14 @@ pub fn zellij_server_listener(
                         sock_dir.to_str().unwrap().to_owned()
                     };
 
-                    reload_config_from_disk(&mut config, &mut config_options, &config_file_path);
+                    if let Err(e) = reload_config_from_disk(
+                        &mut config,
+                        &mut config_options,
+                        &config_file_path,
+                        &config_dir,
+                    ) {
+                        log::error!("Failed to reload config: {}", e);
+                    }
 
                     let full_screen_ws = os_input.get_terminal_size();
                     let mut sent_init_messages = false;
@@ -109,7 +120,7 @@ pub fn zellij_server_listener(
                     }
 
                     let should_create_new_session = !session_exists;
-                    let first_message = create_first_message(is_read_only, config_file_path.clone(), client_attributes.clone(), config_options.clone(), should_create_new_session, &session_name, initial_layout);
+                    let first_message = create_first_message(is_read_only, config_file_path.clone(), config_dir.clone(), client_attributes.clone(), config_options.clone(), should_create_new_session, &session_name, initial_layout);
                     let zellij_ipc_pipe = create_ipc_pipe(&session_name);
 
                     session_manager.spawn_session_if_needed(
@@ -324,16 +335,64 @@ fn reload_config_from_disk(
     config_without_layout: &mut Config,
     config_options_without_layout: &mut Options,
     config_file_path: &Option<PathBuf>,
-) {
+    config_dir: &Option<PathBuf>,
+) -> Result<(), ConfigError> {
     let mut cli_args = CliArgs::default();
     cli_args.config = config_file_path.clone();
-    match Setup::from_cli_args(&cli_args) {
-        Ok((_, _, _, reloaded_config_without_layout, reloaded_config_options_without_layout)) => {
-            *config_without_layout = reloaded_config_without_layout;
-            *config_options_without_layout = reloaded_config_options_without_layout;
-        },
-        Err(e) => {
-            log::error!("Failed to reload config: {}", e);
-        },
+    cli_args.config_dir = config_dir.clone();
+    let (_, _, _, reloaded_config_without_layout, reloaded_config_options_without_layout) =
+        Setup::from_cli_args(&cli_args)?;
+    *config_without_layout = reloaded_config_without_layout;
+    *config_options_without_layout = reloaded_config_options_without_layout;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reload_config_from_disk;
+    use std::{fs, path::Path};
+    use tempfile::tempdir;
+    use zellij_utils::{
+        data::InputMode,
+        input::{config::Config, options::Options},
     };
+
+    #[test]
+    fn web_client_reload_finds_named_layout_in_custom_config_dir() {
+        let config_dir = tempdir().unwrap();
+        let layouts_dir = config_dir.path().join("layouts");
+        fs::create_dir(&layouts_dir).unwrap();
+
+        let config_file = config_dir.path().join("config.kdl");
+        fs::write(
+            &config_file,
+            r#"
+                keybinds clear-defaults=true {
+                    locked {
+                        bind "Ctrl g" { SwitchToMode "Normal"; }
+                    }
+                }
+                default_mode "locked"
+                default_layout "custom"
+            "#,
+        )
+        .unwrap();
+        fs::write(layouts_dir.join("custom.kdl"), "layout {\n    pane\n}\n").unwrap();
+
+        let mut config = Config::default();
+        let mut config_options = Options::default();
+        reload_config_from_disk(
+            &mut config,
+            &mut config_options,
+            &Some(config_file),
+            &Some(config_dir.path().to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(config.options.default_mode, Some(InputMode::Locked));
+        assert_eq!(
+            config.options.default_layout.as_deref(),
+            Some(Path::new("custom"))
+        );
+    }
 }
