@@ -63,6 +63,7 @@ pub fn start_web_client(
     config: Config,
     config_options: Options,
     config_file_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     run_daemonized: bool,
     custom_ip: Option<IpAddr>,
     custom_port: Option<u16>,
@@ -162,10 +163,11 @@ pub fn start_web_client(
         }
     };
 
-    runtime.block_on(serve_web_client(
+    runtime.block_on(serve_web_client_with_config_dir(
         config,
         config_options,
         config_file_path,
+        config_dir,
         listener,
         tls_config,
         None,
@@ -179,6 +181,33 @@ pub async fn serve_web_client(
     config: Config,
     config_options: Options,
     config_file_path: Option<PathBuf>,
+    listener: std::net::TcpListener,
+    rustls_config: Option<RustlsConfig>,
+    session_manager: Option<Arc<dyn SessionManager>>,
+    client_os_api_factory: Option<Arc<dyn ClientOsApiFactory>>,
+    web_server_ip: IpAddr,
+    web_server_port: u16,
+) {
+    serve_web_client_with_config_dir(
+        config,
+        config_options,
+        config_file_path,
+        None,
+        listener,
+        rustls_config,
+        session_manager,
+        client_os_api_factory,
+        web_server_ip,
+        web_server_port,
+    )
+    .await;
+}
+
+async fn serve_web_client_with_config_dir(
+    config: Config,
+    config_options: Options,
+    config_file_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     listener: std::net::TcpListener,
     rustls_config: Option<RustlsConfig>,
     session_manager: Option<Arc<dyn SessionManager>>,
@@ -213,6 +242,7 @@ pub async fn serve_web_client(
         config: Arc::new(Mutex::new(config)),
         config_options,
         config_file_path,
+        config_dir,
         session_manager,
         client_os_api_factory,
         is_https,

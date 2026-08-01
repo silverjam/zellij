@@ -204,6 +204,7 @@ pub(crate) fn start_web_server(
         config,
         config_options,
         opts.config,
+        opts.config_dir,
         run_daemonized,
         ip,
         port,

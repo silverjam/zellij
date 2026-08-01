@@ -58,6 +58,7 @@ pub fn spawn_new_session(
 pub fn create_first_message(
     is_read_only: bool,
     config_file_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     client_attributes: ClientAttributes,
     mut config_opts: Options,
     should_create_session: bool,
@@ -92,7 +93,7 @@ pub fn create_first_message(
         config_opts.web_sharing = Some(WebSharing::On);
         let cli_assets = CliAssets {
             config_file_path,
-            config_dir: None,
+            config_dir,
             should_ignore_config: false,
             configuration_options: Some(config_opts),
             layout: layout_info,
@@ -111,7 +112,7 @@ pub fn create_first_message(
     } else {
         let cli_assets = CliAssets {
             config_file_path,
-            config_dir: None,
+            config_dir,
             should_ignore_config: false,
             configuration_options: Some(config_opts),
             layout: None,
