@@ -1,4 +1,5 @@
 import { handleReconnection, handleDisconnected, markConnectionEstablished } from "./connection.js";
+import { refreshClientId } from "./auth.js";
 import { getBaseUrl, getWebSocketBaseUrl } from "./utils.js";
 import { setSoftKeyboard } from "./input.js";
 import { applyFontSize } from "./terminal.js";
@@ -29,7 +30,11 @@ function getCellPixelDimensions(term) {
 }
 
 function sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, cause) {
-    if (!wsControl || !ownWebClientId) {
+    if (
+        !wsControl ||
+        wsControl.readyState !== WebSocket.OPEN ||
+        !ownWebClientId
+    ) {
         return;
     }
     const resizeType =
@@ -70,12 +75,80 @@ export function initWebSockets(
     webClientId,
     sessionName,
     term,
+    fitAddon
+) {
+    const controller = { active: null };
+    controller.active = createWebSockets(
+        webClientId,
+        sessionName,
+        term,
+        fitAddon,
+        controller
+    );
+
+    setupResizeHandler(
+        term,
+        fitAddon,
+        () => controller.active && controller.active.getWsControl(),
+        () => controller.active ? controller.active.getOwnWebClientId() : ""
+    );
+
+    return {
+        get wsTerminal() {
+            return controller.active && controller.active.wsTerminal;
+        },
+        getWsControl: () => controller.active && controller.active.getWsControl(),
+        getOwnWebClientId: () =>
+            controller.active ? controller.active.getOwnWebClientId() : "",
+        sendAnsiKey: (ansiKey) => {
+            const terminalSocket = controller.active && controller.active.wsTerminal;
+            if (terminalSocket && terminalSocket.readyState === WebSocket.OPEN) {
+                terminalSocket.send(ansiKey);
+            }
+        },
+        cleanup: () => {
+            if (controller.active) controller.active.cleanup();
+        },
+    };
+}
+
+async function replaceWebSockets(controller, sessionName, term, fitAddon) {
+    const webClientId = await refreshClientId();
+    if (!webClientId) return false;
+
+    if (controller.active) controller.active.cleanup();
+    const replacement = createWebSockets(
+        webClientId,
+        sessionName,
+        term,
+        fitAddon,
+        controller
+    );
+    controller.active = replacement;
+    return Promise.race([
+        replacement.ready,
+        new Promise((resolve) => setTimeout(() => resolve(false), 10000)),
+    ]);
+}
+
+function createWebSockets(
+    webClientId,
+    sessionName,
+    term,
     fitAddon,
-    sendAnsiKey
+    controller
 ) {
     let ownWebClientId = "";
     let wsTerminal;
     let wsControl;
+    let resolveReady;
+    let readySettled = false;
+    const ready = new Promise((resolve) => { resolveReady = resolve; });
+    const settleReady = (value) => {
+        if (readySettled) return;
+        readySettled = true;
+        resolveReady(value);
+    };
     const userConfig = { blink: false, style: false };
 
     const wsBaseUrl = getWebSocketBaseUrl();
@@ -98,7 +171,16 @@ export function initWebSockets(
             ownWebClientId = webClientId;
             const wsControlUrl = `${wsBaseUrl}/ws/control`;
             wsControl = new WebSocket(wsControlUrl);
-            startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig);
+            startWsControl(
+                wsControl,
+                term,
+                fitAddon,
+                ownWebClientId,
+                userConfig,
+                () => settleReady(true),
+                () => settleReady(false),
+                () => replaceWebSockets(controller, sessionName, term, fitAddon)
+            );
         }
 
         let data = event.data;
@@ -151,45 +233,46 @@ export function initWebSockets(
         if (event.code === 4001) {
             handleDisconnected();
         } else {
-            handleReconnection();
+            settleReady(false);
+            handleReconnection(() =>
+                replaceWebSockets(controller, sessionName, term, fitAddon)
+            );
         }
     };
-
-    const originalSendAnsiKey = sendAnsiKey;
-    sendAnsiKey = (ansiKey) => {
-        if (ownWebClientId !== "") {
-            wsTerminal.send(ansiKey);
-        }
-    };
-
-    setupResizeHandler(
-        term,
-        fitAddon,
-        () => wsControl,
-        () => ownWebClientId
-    );
 
     return {
         wsTerminal,
         getWsControl: () => wsControl,
         getOwnWebClientId: () => ownWebClientId,
-        sendAnsiKey,
+        ready,
         cleanup: () => {
             if (wsTerminal) {
+                wsTerminal.onclose = null;
                 wsTerminal.close();
             }
             if (wsControl) {
+                wsControl.onclose = null;
                 wsControl.close();
             }
         },
     };
 }
 
-function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
+function startWsControl(
+    wsControl,
+    term,
+    fitAddon,
+    ownWebClientId,
+    userConfig,
+    onReady,
+    onFailure,
+    reconnectSockets
+) {
     wsControl.onopen = function (event) {
         const fitDimensions = fitAddon.proposeDimensions();
         const { rows, cols } = fitDimensions;
         sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols);
+        onReady();
     };
 
     wsControl.onmessage = function (event) {
@@ -296,7 +379,8 @@ function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
         if (event.code === 4001) {
             handleDisconnected();
         } else {
-            handleReconnection();
+            onFailure();
+            handleReconnection(reconnectSockets);
         }
     };
 }

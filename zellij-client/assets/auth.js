@@ -90,6 +90,31 @@ export async function getClientId(token, rememberMe, hasAuthenticationCookie) {
 }
 
 /**
+ * Request a new server-side web client for an already authenticated browser.
+ * Reconnection uses this instead of reloading the document, preserving the
+ * terminal emulator, scrollback and browser state while sockets are replaced.
+ * @returns {Promise<string|null>} a fresh client ID, or null while unavailable
+ */
+export async function refreshClientId() {
+    try {
+        const baseUrl = getBaseUrl();
+        const response = await fetch(`${baseUrl}/session`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+            credentials: "include",
+        });
+        if (!response.ok) {
+            return null;
+        }
+        const body = await response.json();
+        return body.web_client_id || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
  * Initialize authentication flow and return client ID
  * @returns {Promise<string>} Client ID
  */

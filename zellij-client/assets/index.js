@@ -12,14 +12,7 @@ document.addEventListener("DOMContentLoaded", async (event) => {
     const { term, fitAddon } = initTerminal();
     const sessionName = location.pathname.split("/").pop();
 
-    let sendAnsiKey = (ansiKey) => {};
-
-    setupInputHandlers(term, fitAddon, sendAnsiKey);
-
     document.title = sessionName;
-    const websockets = initWebSockets(webClientId, sessionName, term, fitAddon, sendAnsiKey);
-
-    sendAnsiKey = websockets.sendAnsiKey;
-
-    setupInputHandlers(term, fitAddon, sendAnsiKey);
+    const websockets = initWebSockets(webClientId, sessionName, term, fitAddon);
+    setupInputHandlers(term, fitAddon, websockets.sendAnsiKey);
 });

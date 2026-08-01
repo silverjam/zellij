@@ -11,6 +11,8 @@ let isDisconnected = false;
 let reconnectionTimeout = null;
 let hasConnectedBefore = false;
 let isPageUnloading = false;
+let didFallbackReload = false;
+const MAX_RECONNECTION_ATTEMPTS = 8;
 
 /**
  * Get the delay for reconnection attempts using exponential backoff
@@ -54,17 +56,16 @@ export async function handleDisconnected() {
 
 /**
  * Handle reconnection attempts with exponential backoff
+ * @param {() => Promise<boolean>} reconnectSockets replaces the live sockets
  * @returns {Promise<void>}
  */
-export async function handleReconnection() {
+export async function handleReconnection(reconnectSockets) {
     if (isReconnecting || !hasConnectedBefore || isPageUnloading) {
         return;
     }
 
     isReconnecting = true;
-    let currentModal = null;
-
-    while (isReconnecting) {
+    while (isReconnecting && reconnectionAttempt < MAX_RECONNECTION_ATTEMPTS) {
         reconnectionAttempt++;
         const delaySeconds = getReconnectionDelay(reconnectionAttempt);
 
@@ -81,20 +82,30 @@ export async function handleReconnection() {
         }
 
         if (result.action === "reconnect") {
-            currentModal = result.modal;
             const connectionOk = await checkConnection();
 
             if (connectionOk) {
-                if (result.cleanup) result.cleanup();
-                isReconnecting = false;
-                reconnectionAttempt = 0;
-                window.location.reload();
-                return;
-            } else {
-                if (result.cleanup) result.cleanup();
-                continue;
+                const reconnected = await reconnectSockets();
+                if (reconnected) {
+                    if (result.cleanup) result.cleanup();
+                    isReconnecting = false;
+                    reconnectionAttempt = 0;
+                    return;
+                }
             }
+            if (result.cleanup) result.cleanup();
         }
+    }
+
+    isReconnecting = false;
+    reconnectionAttempt = 0;
+    await showErrorModal(
+        "Connection unavailable",
+        "The terminal could not reconnect after several attempts. Reloading once for a clean recovery."
+    );
+    if (!didFallbackReload && !isPageUnloading) {
+        didFallbackReload = true;
+        window.location.reload();
     }
 }
 
@@ -128,4 +139,5 @@ export function resetConnectionState() {
     reconnectionTimeout = null;
     hasConnectedBefore = false;
     isPageUnloading = false;
+    didFallbackReload = false;
 }
