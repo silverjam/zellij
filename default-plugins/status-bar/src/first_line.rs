@@ -144,10 +144,9 @@ fn long_mode_shortcut(
 ) -> LinePart {
     let key_hint = key.full_text();
     let has_common_modifiers = !common_modifiers.is_empty();
-    let key_binding = match (&key.mode, &key.key) {
-        (KeyMode::Disabled, None) => "".to_string(),
-        (_, None) => return LinePart::default(),
-        (_, Some(_)) => key.letter_shortcut(common_modifiers),
+    let key_binding = match &key.key {
+        None => return LinePart::default(),
+        Some(_) => key.letter_shortcut(common_modifiers),
     };
 
     let colors = match key.mode {
@@ -196,10 +195,9 @@ fn shortened_modifier_shortcut(
 ) -> LinePart {
     let key_hint = key.full_text();
     let has_common_modifiers = !common_modifiers.is_empty();
-    let key_binding = match (&key.mode, &key.key) {
-        (KeyMode::Disabled, None) => "".to_string(),
-        (_, None) => return LinePart::default(),
-        (_, Some(_)) => key.with_shortened_modifiers(common_modifiers),
+    let key_binding = match &key.key {
+        None => return LinePart::default(),
+        Some(_) => key.with_shortened_modifiers(common_modifiers),
     };
 
     let colors = match key.mode {
@@ -265,10 +263,9 @@ fn short_mode_shortcut(
     first_tile: bool,
 ) -> LinePart {
     let has_common_modifiers = !common_modifiers.is_empty();
-    let key_binding = match (&key.mode, &key.key) {
-        (KeyMode::Disabled, None) => "".to_string(),
-        (_, None) => return LinePart::default(),
-        (_, Some(_)) => key.letter_shortcut(common_modifiers),
+    let key_binding = match &key.key {
+        None => return LinePart::default(),
+        Some(_) => key.letter_shortcut(common_modifiers),
     };
 
     let colors = match key.mode {
@@ -892,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    // Must be displayed but without keybinding
+    // An unavailable action must not be advertised without a keybinding.
     fn long_mode_shortcut_disabled_without_binding() {
         let key = KeyShortcut::new(KeyMode::Disabled, KeyAction::Session, None);
         let color = colored_elements();
@@ -900,7 +897,7 @@ mod tests {
         let ret = long_mode_shortcut(&key, color, "+", &vec![], false);
         let ret = unstyle(ret);
 
-        assert_eq!(ret, "+ <> SESSION +".to_string());
+        assert_eq!(ret, "".to_string());
     }
 
     #[test]
@@ -1188,5 +1185,30 @@ mod tests {
         let ret = unstyle(ret);
 
         assert_eq!(ret, " Ctrl +  a  b  c ".to_string());
+    }
+
+    #[test]
+    fn locked_mode_does_not_advertise_unbound_stock_actions() {
+        let mode_info = ModeInfo {
+            mode: InputMode::Locked,
+            keybinds: vec![(
+                InputMode::Locked,
+                vec![(
+                    KeyWithModifier::new(BareKey::Char('g')).with_ctrl_modifier(),
+                    vec![Action::SwitchToMode {
+                        input_mode: InputMode::Normal,
+                    }],
+                )],
+            )],
+            ..ModeInfo::default()
+        };
+
+        let ret = unstyle(first_line(&mode_info, None, 500, ">"));
+
+        assert!(ret.contains("<g> LOCK"));
+        assert!(!ret.contains("PANE"));
+        assert!(!ret.contains("TAB"));
+        assert!(!ret.contains("SESSION"));
+        assert!(!ret.contains("QUIT"));
     }
 }
