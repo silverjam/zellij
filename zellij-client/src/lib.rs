@@ -800,11 +800,16 @@ async fn wait_for_remote_session_and_disconnect(
         .await
         .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
 
+    let mut session_announced = false;
+    let mut terminal_ready = false;
     let mut detach_requested = false;
     loop {
         tokio::select! {
             terminal_msg = connections.terminal_ws.next() => {
                 match terminal_msg {
+                    Some(Ok(Message::Text(_))) | Some(Ok(Message::Binary(_))) => {
+                        terminal_ready = true;
+                    },
                     Some(Ok(Message::Close(_))) | None if detach_requested => break,
                     Some(Ok(Message::Close(_))) | None => {
                         return Err(RemoteClientError::ConnectionFailed(
@@ -822,20 +827,7 @@ async fn wait_for_remote_session_and_disconnect(
                     Some(Ok(Message::Text(msg))) => {
                         match serde_json::from_str(&msg) {
                             Ok(WebServerToWebClientControlMessage::SwitchedSession { .. }) => {
-                                let detach_message = Message::Text(
-                                    serde_json::to_string(&WebClientToWebServerControlMessage {
-                                        web_client_id: connections.web_client_id.clone(),
-                                        payload: WebClientToWebServerControlMessagePayload::Detach,
-                                    })
-                                    .unwrap()
-                                    .into(),
-                                );
-                                connections
-                                    .control_ws
-                                    .send(detach_message)
-                                    .await
-                                    .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
-                                detach_requested = true;
+                                session_announced = true;
                             },
                             Ok(WebServerToWebClientControlMessage::QueryTerminalSize) => {
                                 connections
@@ -860,6 +852,26 @@ async fn wait_for_remote_session_and_disconnect(
                     _ => {},
                 }
             },
+        }
+
+        // SwitchedSession is emitted as soon as the server listener connects, while
+        // the new session can still be initializing and drop input. The first
+        // terminal render proves the session router is ready to process Detach.
+        if session_announced && terminal_ready && !detach_requested {
+            let detach_message = Message::Text(
+                serde_json::to_string(&WebClientToWebServerControlMessage {
+                    web_client_id: connections.web_client_id.clone(),
+                    payload: WebClientToWebServerControlMessagePayload::Detach,
+                })
+                .unwrap()
+                .into(),
+            );
+            connections
+                .control_ws
+                .send(detach_message)
+                .await
+                .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
+            detach_requested = true;
         }
     }
 

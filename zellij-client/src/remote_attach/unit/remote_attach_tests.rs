@@ -149,6 +149,8 @@ mod mock_server {
             use futures_util::{SinkExt, StreamExt};
             let (mut sender, mut receiver) = socket.split();
 
+            let _ = sender.send(Message::Text("session-ready".into())).await;
+
             while let Some(Ok(msg)) = receiver.next().await {
                 if matches!(&msg, Message::Close(_)) {
                     state.record_endpoint("/ws/terminal/closed");
