@@ -150,6 +150,10 @@ mod mock_server {
             let (mut sender, mut receiver) = socket.split();
 
             while let Some(Ok(msg)) = receiver.next().await {
+                if matches!(&msg, Message::Close(_)) {
+                    state.record_endpoint("/ws/terminal/closed");
+                    break;
+                }
                 if let Message::Text(text) = msg {
                     let _ = sender.send(Message::Text(text)).await;
                 }
@@ -182,7 +186,19 @@ mod mock_server {
             use futures_util::{SinkExt, StreamExt};
             let (mut sender, mut receiver) = socket.split();
 
+            let switched_session = serde_json::to_string(
+                &crate::web_client::control_message::WebServerToWebClientControlMessage::SwitchedSession {
+                    new_session_name: "session-name".to_owned(),
+                },
+            )
+            .unwrap();
+            let _ = sender.send(Message::Text(switched_session.into())).await;
+
             while let Some(Ok(msg)) = receiver.next().await {
+                if matches!(&msg, Message::Close(_)) {
+                    state.record_endpoint("/ws/control/closed");
+                    break;
+                }
                 if let Message::Text(text) = msg {
                     let _ = sender.send(Message::Text(text)).await;
                 }
@@ -476,6 +492,57 @@ mod tests {
             endpoints.contains(&"/ws/control".to_string()),
             "Should establish control WebSocket"
         );
+
+        server_handle.abort();
+        cleanup_test_db(&format!("http://127.0.0.1:{}", port));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_remote_create_background_waits_for_session_and_closes_connections() {
+        let server_state = MockRemoteServerState::new();
+        let auth_token = "background-auth-token";
+        server_state.add_valid_token(auth_token);
+
+        let (port, server_handle) = start_mock_server(server_state.clone()).await;
+        let server_url = format!("http://127.0.0.1:{}/session-name", port);
+        setup_test_db(&format!("http://127.0.0.1:{}", port));
+
+        let result = tokio::task::spawn_blocking(move || {
+            crate::start_remote_client(
+                Box::new(MockClientOsApi),
+                &server_url,
+                Some(auth_token.to_owned()),
+                false,
+                false,
+                None,
+                true,
+                None,
+                true,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            result.is_ok(),
+            "background creation failed: {:?}",
+            result.err()
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let endpoints = server_state.get_endpoints_called();
+                if endpoints.contains(&"/ws/terminal/closed".to_owned())
+                    && endpoints.contains(&"/ws/control/closed".to_owned())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("client did not close both WebSockets");
 
         server_handle.abort();
         cleanup_test_db(&format!("http://127.0.0.1:{}", port));

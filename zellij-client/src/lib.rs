@@ -776,6 +776,81 @@ pub async fn run_remote_client_terminal_loop(
 }
 
 #[cfg(feature = "web_server_capability")]
+async fn wait_for_remote_session_and_disconnect(
+    os_input: Box<dyn ClientOsApi>,
+    mut connections: remote_attach::WebSocketConnections,
+) -> Result<(), RemoteClientError> {
+    let create_resize_message = |size: Size| {
+        Message::Text(
+            serde_json::to_string(&WebClientToWebServerControlMessage {
+                web_client_id: connections.web_client_id.clone(),
+                payload: WebClientToWebServerControlMessagePayload::TerminalResize(size),
+            })
+            .unwrap()
+            .into(),
+        )
+    };
+
+    connections
+        .control_ws
+        .send(create_resize_message(os_input.get_terminal_size()))
+        .await
+        .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
+
+    loop {
+        tokio::select! {
+            terminal_msg = connections.terminal_ws.next() => {
+                match terminal_msg {
+                    Some(Ok(Message::Close(_))) | None => {
+                        return Err(RemoteClientError::ConnectionFailed(
+                            "terminal connection closed before the session was ready".to_owned(),
+                        ));
+                    },
+                    Some(Err(e)) => {
+                        return Err(RemoteClientError::ConnectionFailed(e.to_string()));
+                    },
+                    _ => {},
+                }
+            },
+            control_msg = connections.control_ws.next() => {
+                match control_msg {
+                    Some(Ok(Message::Text(msg))) => {
+                        match serde_json::from_str(&msg) {
+                            Ok(WebServerToWebClientControlMessage::SwitchedSession { .. }) => break,
+                            Ok(WebServerToWebClientControlMessage::QueryTerminalSize) => {
+                                connections
+                                    .control_ws
+                                    .send(create_resize_message(os_input.get_terminal_size()))
+                                    .await
+                                    .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
+                            },
+                            Ok(_) => {},
+                            Err(e) => log::error!("Failed to deserialize control message: {}", e),
+                        }
+                    },
+                    Some(Ok(Message::Close(_))) | None => {
+                        return Err(RemoteClientError::ConnectionFailed(
+                            "control connection closed before the session was ready".to_owned(),
+                        ));
+                    },
+                    Some(Err(e)) => {
+                        return Err(RemoteClientError::ConnectionFailed(e.to_string()));
+                    },
+                    _ => {},
+                }
+            },
+        }
+    }
+
+    // Close both halves of the web client cleanly. The session remains alive because
+    // it was created through the regular web-client path rather than as a detached
+    // native client.
+    let _ = connections.terminal_ws.close(None).await;
+    let _ = connections.control_ws.close(None).await;
+    Ok(())
+}
+
+#[cfg(feature = "web_server_capability")]
 pub fn start_remote_client(
     mut os_input: Box<dyn ClientOsApi>,
     remote_session_url: &str,
@@ -785,6 +860,7 @@ pub fn start_remote_client(
     ca_cert: Option<std::path::PathBuf>,
     insecure: bool,
     async_worker_tasks: Option<usize>,
+    start_detached_and_exit: bool,
 ) -> Result<Option<ConnectToSession>, RemoteClientError> {
     info!("Starting Zellij client!");
 
@@ -808,6 +884,14 @@ pub fn start_remote_client(
         ca_cert.as_deref(),
         insecure,
     )?;
+
+    if start_detached_and_exit {
+        runtime.block_on(wait_for_remote_session_and_disconnect(
+            os_input,
+            connections,
+        ))?;
+        return Ok(None);
+    }
 
     let reconnect_to_session = None;
     os_input.unset_raw_mode().unwrap();
