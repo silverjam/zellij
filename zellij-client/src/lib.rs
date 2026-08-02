@@ -797,10 +797,12 @@ async fn wait_for_remote_session_and_disconnect(
         .await
         .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
 
+    let mut detach_requested = false;
     loop {
         tokio::select! {
             terminal_msg = connections.terminal_ws.next() => {
                 match terminal_msg {
+                    Some(Ok(Message::Close(_))) | None if detach_requested => break,
                     Some(Ok(Message::Close(_))) | None => {
                         return Err(RemoteClientError::ConnectionFailed(
                             "terminal connection closed before the session was ready".to_owned(),
@@ -816,7 +818,22 @@ async fn wait_for_remote_session_and_disconnect(
                 match control_msg {
                     Some(Ok(Message::Text(msg))) => {
                         match serde_json::from_str(&msg) {
-                            Ok(WebServerToWebClientControlMessage::SwitchedSession { .. }) => break,
+                            Ok(WebServerToWebClientControlMessage::SwitchedSession { .. }) => {
+                                let detach_message = Message::Text(
+                                    serde_json::to_string(&WebClientToWebServerControlMessage {
+                                        web_client_id: connections.web_client_id.clone(),
+                                        payload: WebClientToWebServerControlMessagePayload::Detach,
+                                    })
+                                    .unwrap()
+                                    .into(),
+                                );
+                                connections
+                                    .control_ws
+                                    .send(detach_message)
+                                    .await
+                                    .map_err(|e| RemoteClientError::ConnectionFailed(e.to_string()))?;
+                                detach_requested = true;
+                            },
                             Ok(WebServerToWebClientControlMessage::QueryTerminalSize) => {
                                 connections
                                     .control_ws
@@ -828,6 +845,7 @@ async fn wait_for_remote_session_and_disconnect(
                             Err(e) => log::error!("Failed to deserialize control message: {}", e),
                         }
                     },
+                    Some(Ok(Message::Close(_))) | None if detach_requested => break,
                     Some(Ok(Message::Close(_))) | None => {
                         return Err(RemoteClientError::ConnectionFailed(
                             "control connection closed before the session was ready".to_owned(),
@@ -842,9 +860,8 @@ async fn wait_for_remote_session_and_disconnect(
         }
     }
 
-    // Close both halves of the web client cleanly. The session remains alive because
-    // it was created through the regular web-client path rather than as a detached
-    // native client.
+    // The server acknowledged the protocol-level detach by closing the connection.
+    // Close any remaining WebSocket half cleanly before returning.
     let _ = connections.terminal_ws.close(None).await;
     let _ = connections.control_ws.close(None).await;
     Ok(())

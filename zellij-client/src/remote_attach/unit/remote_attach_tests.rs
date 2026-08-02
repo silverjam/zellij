@@ -200,6 +200,20 @@ mod mock_server {
                     break;
                 }
                 if let Message::Text(text) = msg {
+                    if let Ok(control_message) = serde_json::from_str::<
+                        crate::web_client::control_message::WebClientToWebServerControlMessage,
+                    >(&text)
+                    {
+                        if matches!(
+                            control_message.payload,
+                            crate::web_client::control_message::WebClientToWebServerControlMessagePayload::Detach
+                        ) {
+                            state.record_endpoint("/ws/control/detach");
+                            let _ = sender.send(Message::Close(None)).await;
+                            state.record_endpoint("/ws/control/closed");
+                            break;
+                        }
+                    }
                     let _ = sender.send(Message::Text(text)).await;
                 }
             }
@@ -499,7 +513,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_remote_create_background_waits_for_session_and_closes_connections() {
+    async fn test_remote_create_background_detaches_after_session_is_ready() {
         let server_state = MockRemoteServerState::new();
         let auth_token = "background-auth-token";
         server_state.add_valid_token(auth_token);
@@ -533,7 +547,8 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let endpoints = server_state.get_endpoints_called();
-                if endpoints.contains(&"/ws/terminal/closed".to_owned())
+                if endpoints.contains(&"/ws/control/detach".to_owned())
+                    && endpoints.contains(&"/ws/terminal/closed".to_owned())
                     && endpoints.contains(&"/ws/control/closed".to_owned())
                 {
                     break;

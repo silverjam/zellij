@@ -20,6 +20,7 @@ use futures::StreamExt;
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio_util::sync::CancellationToken;
 use zellij_utils::{
+    input::actions::Action,
     input::mouse::MouseEvent,
     ipc::{ClientToServerMsg, PixelDimensions, ResizeCause},
     pane_size::SizeInPixels,
@@ -75,6 +76,12 @@ async fn handle_ws_control(
             return;
         };
         let client_msg = match deserialized_msg.payload {
+            WebClientToWebServerControlMessagePayload::Detach => ClientToServerMsg::Action {
+                action: Action::Detach,
+                terminal_id: None,
+                client_id: None,
+                is_cli_client: false,
+            },
             WebClientToWebServerControlMessagePayload::TerminalResize(size) => {
                 ClientToServerMsg::TerminalResize {
                     new_size: size,

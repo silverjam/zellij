@@ -11,6 +11,7 @@ pub struct WebClientToWebServerControlMessage {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum WebClientToWebServerControlMessagePayload {
+    Detach,
     TerminalResize(Size),
     TerminalResizeRendering(Size),
     TerminalSizeSettled(Size),
