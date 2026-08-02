@@ -76,6 +76,7 @@ async fn handle_ws_control(
             return;
         };
         let client_msg = match deserialized_msg.payload {
+            WebClientToWebServerControlMessagePayload::Register => return,
             WebClientToWebServerControlMessagePayload::Detach => ClientToServerMsg::Action {
                 action: Action::Detach,
                 terminal_id: None,
@@ -148,6 +149,16 @@ async fn handle_ws_control(
                                     &deserialized_msg.web_client_id,
                                     control_channel_tx.clone(),
                                 );
+                        }
+                        if matches!(
+                            deserialized_msg.payload,
+                            WebClientToWebServerControlMessagePayload::Register
+                        ) {
+                            let registered = WebServerToWebClientControlMessage::Registered;
+                            let _ = control_channel_tx.send(Message::Text(
+                                serde_json::to_string(&registered).unwrap().into(),
+                            ));
+                            continue;
                         }
                         send_message_to_server(deserialized_msg);
                     },

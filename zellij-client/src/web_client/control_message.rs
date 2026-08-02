@@ -11,6 +11,7 @@ pub struct WebClientToWebServerControlMessage {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum WebClientToWebServerControlMessagePayload {
+    Register,
     Detach,
     TerminalResize(Size),
     TerminalResizeRendering(Size),
@@ -31,6 +32,7 @@ pub struct TerminalMetricsPayload {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum WebServerToWebClientControlMessage {
+    Registered,
     SetConfig(SetConfigPayload),
     QueryTerminalSize,
     Log { lines: Vec<String> },

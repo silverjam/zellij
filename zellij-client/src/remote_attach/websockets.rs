@@ -1,5 +1,10 @@
 use super::config::{WS_CONTROL_ENDPOINT, WS_TERMINAL_ENDPOINT};
 use super::http_client::HttpClientWithCookies;
+use crate::web_client::control_message::{
+    WebClientToWebServerControlMessage, WebClientToWebServerControlMessagePayload,
+    WebServerToWebClientControlMessage,
+};
+use futures_util::{SinkExt, StreamExt};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -266,9 +271,37 @@ pub async fn establish_websocket_connections(
         None
     };
 
-    // Connect to both WebSockets
-    let terminal_ws = connect_ws(terminal_request, &host, port, tls_config.clone()).await?;
-    let control_ws = connect_ws(control_request, &host, port, tls_config).await?;
+    // Register the control channel before opening the terminal channel. Opening the
+    // terminal starts the session listener, which can otherwise emit its one-time
+    // readiness message before the control channel exists.
+    let mut control_ws = connect_ws(control_request, &host, port, tls_config.clone()).await?;
+    let register_message = tokio_tungstenite::tungstenite::Message::Text(
+        serde_json::to_string(&WebClientToWebServerControlMessage {
+            web_client_id: web_client_id.to_owned(),
+            payload: WebClientToWebServerControlMessagePayload::Register,
+        })?
+        .into(),
+    );
+    control_ws.send(register_message).await?;
+    loop {
+        match control_ws.next().await {
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(message))) => {
+                if matches!(
+                    serde_json::from_str(&message),
+                    Ok(WebServerToWebClientControlMessage::Registered)
+                ) {
+                    break;
+                }
+            },
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
+                return Err("control WebSocket closed before registration".into());
+            },
+            Some(Err(error)) => return Err(error.into()),
+            _ => {},
+        }
+    }
+
+    let terminal_ws = connect_ws(terminal_request, &host, port, tls_config).await?;
 
     Ok(WebSocketConnections {
         terminal_ws,

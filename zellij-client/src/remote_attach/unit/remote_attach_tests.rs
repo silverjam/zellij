@@ -186,14 +186,6 @@ mod mock_server {
             use futures_util::{SinkExt, StreamExt};
             let (mut sender, mut receiver) = socket.split();
 
-            let switched_session = serde_json::to_string(
-                &crate::web_client::control_message::WebServerToWebClientControlMessage::SwitchedSession {
-                    new_session_name: "session-name".to_owned(),
-                },
-            )
-            .unwrap();
-            let _ = sender.send(Message::Text(switched_session.into())).await;
-
             while let Some(Ok(msg)) = receiver.next().await {
                 if matches!(&msg, Message::Close(_)) {
                     state.record_endpoint("/ws/control/closed");
@@ -204,6 +196,25 @@ mod mock_server {
                         crate::web_client::control_message::WebClientToWebServerControlMessage,
                     >(&text)
                     {
+                        if matches!(
+                            control_message.payload,
+                            crate::web_client::control_message::WebClientToWebServerControlMessagePayload::Register
+                        ) {
+                            state.record_endpoint("/ws/control/register");
+                            let registered = serde_json::to_string(
+                                &crate::web_client::control_message::WebServerToWebClientControlMessage::Registered,
+                            )
+                            .unwrap();
+                            let _ = sender.send(Message::Text(registered.into())).await;
+                            let switched_session = serde_json::to_string(
+                                &crate::web_client::control_message::WebServerToWebClientControlMessage::SwitchedSession {
+                                    new_session_name: "session-name".to_owned(),
+                                },
+                            )
+                            .unwrap();
+                            let _ = sender.send(Message::Text(switched_session.into())).await;
+                            continue;
+                        }
                         if matches!(
                             control_message.payload,
                             crate::web_client::control_message::WebClientToWebServerControlMessagePayload::Detach
@@ -547,7 +558,8 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let endpoints = server_state.get_endpoints_called();
-                if endpoints.contains(&"/ws/control/detach".to_owned())
+                if endpoints.contains(&"/ws/control/register".to_owned())
+                    && endpoints.contains(&"/ws/control/detach".to_owned())
                     && endpoints.contains(&"/ws/terminal/closed".to_owned())
                     && endpoints.contains(&"/ws/control/closed".to_owned())
                 {

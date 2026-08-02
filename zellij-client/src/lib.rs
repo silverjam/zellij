@@ -729,6 +729,9 @@ pub async fn run_remote_client_terminal_loop(
                             Ok(WebServerToWebClientControlMessage::SetConfig(..)) => {
                                 // no-op
                             }
+                            Ok(WebServerToWebClientControlMessage::Registered) => {
+                                // registration is consumed during connection setup
+                            }
                             Ok(WebServerToWebClientControlMessage::QueryTerminalSize) => {
                                 let new_size = os_input.get_terminal_size();
                                 if let Err(e) = connections.control_ws.send(create_resize_message(new_size)).await {
