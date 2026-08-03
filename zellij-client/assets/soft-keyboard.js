@@ -58,7 +58,6 @@ export function installSoftKeyboardCapture(term, sendFunction) {
         "width:1px;height:1px;" +
         "opacity:0;pointer-events:none;" +
         "overflow:hidden;";
-    captureHost.setAttribute("aria-hidden", "true");
     document.body.appendChild(captureHost);
     // Closed shadow root hides the input from password managers, whose content
     // scripts query input[type=password] and cannot pierce it.
@@ -74,7 +73,10 @@ export function installSoftKeyboardCapture(term, sendFunction) {
     div.setAttribute("autocapitalize", "off");
     div.setAttribute("spellcheck", "false");
     div.setAttribute("inputmode", "text");
-    div.setAttribute("aria-hidden", "true");
+    // This element is intentionally focusable, so it must remain exposed to the
+    // accessibility tree while focused. Hiding it with aria-hidden causes
+    // browsers to retain focus on an inaccessible descendant.
+    div.setAttribute("aria-label", "Terminal input");
     div.setAttribute("data-1p-ignore", "true");
     div.setAttribute("data-lpignore", "true");
     div.setAttribute("data-bwignore", "true");
@@ -174,6 +176,14 @@ export function installSoftKeyboardCapture(term, sendFunction) {
     });
 
     div.addEventListener("keydown", (ev) => {
+        if (ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.shiftKey) {
+            const key = ev.key.toLowerCase();
+            if (key.length === 1 && key >= "a" && key <= "z") {
+                ev.preventDefault();
+                state.sendFn(String.fromCharCode(key.charCodeAt(0) - 96));
+                return;
+            }
+        }
         switch (ev.key) {
             case "Enter":
                 ev.preventDefault();
@@ -211,8 +221,22 @@ export function installSoftKeyboardCapture(term, sendFunction) {
 
     // Mobile browsers honor programmatic focus() only inside a user gesture, so
     // re-focus the capture on every gesture to keep the OS keyboard summoned.
-    const ensureCaptureFocused = () => {
+    const ensureCaptureFocused = (event) => {
         if (!window.__zjSoftKbdEnabled) {
+            return;
+        }
+        // Touch-capable laptops report a coarse pointer even while the user is
+        // operating a mouse. Never let a mouse gesture move hardware-keyboard
+        // focus from xterm's textarea into the mobile capture input.
+        if (
+            event &&
+            event.type === "pointerdown" &&
+            event.pointerType === "mouse"
+        ) {
+            if (state.isFocused) {
+                div.blur();
+            }
+            term.focus();
             return;
         }
         if (state.isFocused) {
@@ -224,7 +248,6 @@ export function installSoftKeyboardCapture(term, sendFunction) {
             div.focus();
         }
     };
-    window.addEventListener("click", ensureCaptureFocused, { passive: true });
     window.addEventListener("touchend", ensureCaptureFocused, { passive: true });
     window.addEventListener("pointerdown", ensureCaptureFocused, {
         capture: true,
