@@ -8871,6 +8871,12 @@ pub(crate) fn screen_thread_main(
 
                 screen.log_and_report_session_state().non_fatal();
                 screen.retain_only_existing_panes_in_pane_groups();
+                // The PTY reader and the child-exit callback run independently. If the reader's
+                // final Render instruction arrives before this ClosePane instruction, removing
+                // the last selectable pane would otherwise leave the UI plugin panes painted over
+                // stale terminal contents indefinitely. Always schedule a post-close render so
+                // render_to_clients can detect and close tabs that no longer have content panes.
+                screen.render(None)?;
             },
             ScreenInstruction::HoldPane(id, exit_status, run_command) => {
                 let is_first_run = false;

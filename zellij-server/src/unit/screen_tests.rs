@@ -658,6 +658,14 @@ impl MockScreen {
 
 impl MockScreen {
     pub fn new(size: Size) -> Self {
+        Self::new_with_background_render_forwarding(size, true)
+    }
+
+    fn new_without_background_render_forwarding(size: Size) -> Self {
+        Self::new_with_background_render_forwarding(size, false)
+    }
+
+    fn new_with_background_render_forwarding(size: Size, forward_background_renders: bool) -> Self {
         let (to_server, server_receiver): ChannelWithContext<ServerInstruction> =
             channels::bounded(50);
         let to_server = SenderWithContext::new(to_server);
@@ -727,7 +735,7 @@ impl MockScreen {
                         .expect("failed to receive event on channel");
                     received_background_jobs.lock().unwrap().push(event.clone());
                     match event {
-                        BackgroundJob::RenderToClients => {
+                        BackgroundJob::RenderToClients if forward_background_renders => {
                             let _ = to_screen.send(ScreenInstruction::RenderToClients);
                         },
                         BackgroundJob::Exit => {
@@ -3820,6 +3828,64 @@ pub fn send_cli_close_pane_action() {
         assert_snapshot!(format!("{}", snapshot));
     }
     assert_snapshot!(format!("{}", snapshot_count));
+}
+
+#[test]
+pub fn natural_exit_renders_after_closing_the_last_pane() {
+    let size = Size { cols: 80, rows: 10 };
+    let mut mock_screen = MockScreen::new_without_background_render_forwarding(size);
+    mock_screen.drop_all_pty_messages();
+    let screen_thread = mock_screen.run(None, vec![]);
+    let received_server_instructions = Arc::new(Mutex::new(vec![]));
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let server_instruction = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+
+    // Reproduce the failing event order: the PTY reader's final render is processed before the
+    // child-exit callback closes the pane. The close must schedule its own render so the now-empty
+    // tab is removed instead of leaving only the tab-bar and status-bar plugin panes on screen.
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    received_server_instructions.lock().unwrap().clear();
+    mock_screen.received_background_jobs.lock().unwrap().clear();
+
+    let _ = mock_screen.to_screen.send(ScreenInstruction::ClosePane(
+        PaneId::Terminal(0),
+        None,
+        None,
+        Some(0),
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    assert!(
+        mock_screen
+            .received_background_jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|job| matches!(job, BackgroundJob::RenderToClients)),
+        "closing a pane must schedule a render even when the PTY's final render already ran"
+    );
+
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        received_server_instructions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|instruction| matches!(instruction, ServerInstruction::Render(None))),
+        "the post-close render must remove the empty tab and request session shutdown"
+    );
+
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
 }
 
 #[test]
