@@ -11,7 +11,7 @@ use std::sync::{
 use zellij_utils::{
     input::{actions::Action, cast_termwiz_key, mouse::MouseEvent},
     ipc::ClientToServerMsg,
-    vendored::termwiz::input::{InputEvent, InputParser},
+    vendored::termwiz::input::{InputEvent, InputParser, KeyCode},
 };
 
 /// Per-WebSocket-connection parsing state. Owns the Kitty and termwiz
@@ -74,7 +74,8 @@ impl StdinSession {
 /// Dispatch a single termwiz `InputEvent` produced by either the live
 /// path or the idle finalize path. `raw_bytes` is the byte slice that
 /// produced the event in the live path; finalize passes an empty slice
-/// because no frame is associated with the drained events.
+/// because no frame is associated with the drained events. Reconstruct
+/// bytes for finalized keys whose terminal encoding is unambiguous.
 fn dispatch_termwiz_event(
     os_input: &dyn ClientOsApi,
     mouse_old_event: &mut MouseEvent,
@@ -83,7 +84,11 @@ fn dispatch_termwiz_event(
 ) {
     match input_event {
         InputEvent::Key(key_event) => {
-            let raw_bytes_vec = raw_bytes.to_vec();
+            let raw_bytes_vec = if raw_bytes.is_empty() && key_event.key == KeyCode::Escape {
+                vec![0x1b]
+            } else {
+                raw_bytes.to_vec()
+            };
             let key = cast_termwiz_key(key_event.clone(), &raw_bytes_vec, None);
             os_input.send_to_server(ClientToServerMsg::Key {
                 key: key.clone(),
@@ -395,6 +400,35 @@ mod tests {
         match &sent_messages[0] {
             ClientToServerMsg::Key { raw_bytes, .. } => {
                 assert_eq!(raw_bytes, &b"a".to_vec());
+            },
+            other => panic!("expected key message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finalized_bare_escape_keeps_its_terminal_byte() {
+        use zellij_utils::data::{BareKey, KeyWithModifier};
+
+        let os_input = RecordingOsInput::default();
+        let mut mouse_old_event = MouseEvent::new();
+        let mut session = super::StdinSession::new(false);
+
+        parse_stdin(
+            b"\x1b",
+            Box::new(os_input.clone()),
+            &mut mouse_old_event,
+            &mut session,
+        );
+        assert!(os_input.take_sent_messages().is_empty());
+
+        session.finalize(&os_input, &mut mouse_old_event);
+
+        let sent_messages = os_input.take_sent_messages();
+        assert_eq!(sent_messages.len(), 1);
+        match &sent_messages[0] {
+            ClientToServerMsg::Key { key, raw_bytes, .. } => {
+                assert_eq!(*key, KeyWithModifier::new(BareKey::Esc));
+                assert_eq!(raw_bytes, b"\x1b");
             },
             other => panic!("expected key message, got {other:?}"),
         }
